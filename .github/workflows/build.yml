@@ -1,0 +1,328 @@
+name: Build Hz Overlay APK
+
+# Put this file in your repo as:  .github/workflows/build.yml
+# It generates the whole Android project and builds the APK (Actions tab -> artifact).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Generate project files
+        run: |
+          cat > settings.gradle <<'HZEOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "HzOverlay"
+          include(":app")
+          HZEOF
+          cat > build.gradle <<'HZEOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          HZEOF
+          cat > gradle.properties <<'HZEOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          HZEOF
+          mkdir -p app
+          cat > app/build.gradle <<'HZEOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.lifeispoop.hzoverlay'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.lifeispoop.hzoverlay"
+                  minSdk 26
+                  targetSdk 33
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          HZEOF
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'HZEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+              <application
+                  android:allowBackup="false"
+                  android:label="Hz Overlay">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".OverlayService"
+                      android:exported="true" />
+              </application>
+          </manifest>
+          HZEOF
+          mkdir -p app/src/main/java/com/lifeispoop/hzoverlay
+          cat > app/src/main/java/com/lifeispoop/hzoverlay/MainActivity.java <<'HZEOF'
+          package com.lifeispoop.hzoverlay;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.widget.Toast;
+
+          public class MainActivity extends Activity {
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  if (!Settings.canDrawOverlays(this)) {
+                      Toast.makeText(this, "Allow \"Display over other apps\", then open Hz Overlay again", Toast.LENGTH_LONG).show();
+                      Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                              Uri.parse("package:" + getPackageName()));
+                      startActivity(intent);
+                  } else {
+                      startForegroundService(new Intent(this, OverlayService.class));
+                      Toast.makeText(this, "Hz Overlay started", Toast.LENGTH_SHORT).show();
+                  }
+                  finish();
+              }
+          }
+          HZEOF
+          mkdir -p app/src/main/java/com/lifeispoop/hzoverlay
+          cat > app/src/main/java/com/lifeispoop/hzoverlay/OverlayService.java <<'HZEOF'
+          package com.lifeispoop.hzoverlay;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.Service;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.IntentFilter;
+          import android.content.SharedPreferences;
+          import android.graphics.Color;
+          import android.graphics.PixelFormat;
+          import android.graphics.Typeface;
+          import android.os.Build;
+          import android.os.IBinder;
+          import android.provider.Settings;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.WindowManager;
+          import android.widget.TextView;
+
+          public class OverlayService extends Service {
+
+              public static final String ACTION_UPDATE = "com.lifeispoop.hzoverlay.UPDATE";
+              public static final String ACTION_STOP = "com.lifeispoop.hzoverlay.STOP";
+              private static final String CHANNEL_ID = "hz_overlay";
+
+              private WindowManager windowManager;
+              private TextView textView;
+              private WindowManager.LayoutParams layoutParams;
+              private String shownText = "";
+              private boolean receiverRegistered = false;
+
+              private final BroadcastReceiver receiver = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context context, Intent intent) {
+                      handle(intent);
+                  }
+              };
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
+              }
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  startForegroundNotification();
+                  if (!Settings.canDrawOverlays(this)) {
+                      stopSelf();
+                      return;
+                  }
+                  addOverlay();
+                  IntentFilter filter = new IntentFilter();
+                  filter.addAction(ACTION_UPDATE);
+                  filter.addAction(ACTION_STOP);
+                  registerReceiver(receiver, filter);
+                  receiverRegistered = true;
+              }
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  handle(intent);
+                  return START_STICKY;
+              }
+
+              @Override
+              public void onDestroy() {
+                  if (receiverRegistered) {
+                      try {
+                          unregisterReceiver(receiver);
+                      } catch (Exception ignored) {
+                      }
+                      receiverRegistered = false;
+                  }
+                  if (windowManager != null && textView != null) {
+                      try {
+                          windowManager.removeView(textView);
+                      } catch (Exception ignored) {
+                      }
+                      textView = null;
+                  }
+                  super.onDestroy();
+              }
+
+              private void startForegroundNotification() {
+                  NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                  NotificationChannel channel = new NotificationChannel(
+                          CHANNEL_ID, "Hz overlay", NotificationManager.IMPORTANCE_MIN);
+                  nm.createNotificationChannel(channel);
+                  Notification notification = new Notification.Builder(this, CHANNEL_ID)
+                          .setContentTitle("Hz overlay")
+                          .setSmallIcon(android.R.drawable.ic_menu_info_details)
+                          .build();
+                  startForeground(1, notification);
+              }
+
+              private int dp(int value) {
+                  return (int) TypedValue.applyDimension(
+                          TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics());
+              }
+
+              private void addOverlay() {
+                  windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+
+                  textView = new TextView(this);
+                  textView.setText("--");
+                  textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f);
+                  textView.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+                  textView.setTextColor(Color.WHITE);
+                  textView.setShadowLayer(4f, 0f, 0f, Color.BLACK);
+
+                  int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                          | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                          | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                          | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+
+                  layoutParams = new WindowManager.LayoutParams(
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.WRAP_CONTENT,
+                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                          flags,
+                          PixelFormat.TRANSLUCENT);
+                  layoutParams.gravity = Gravity.TOP | Gravity.START;
+                  if (Build.VERSION.SDK_INT >= 28) {
+                      layoutParams.layoutInDisplayCutoutMode =
+                              WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                  }
+
+                  SharedPreferences prefs = getSharedPreferences("pos", Context.MODE_PRIVATE);
+                  layoutParams.x = dp(prefs.getInt("x", 12));
+                  layoutParams.y = dp(prefs.getInt("y", 80));
+
+                  windowManager.addView(textView, layoutParams);
+              }
+
+              private void handle(Intent intent) {
+                  if (intent == null || textView == null) {
+                      return;
+                  }
+                  String action = intent.getAction();
+                  if (ACTION_STOP.equals(action)) {
+                      stopSelf();
+                      return;
+                  }
+                  if (intent.hasExtra("x") || intent.hasExtra("y")) {
+                      SharedPreferences prefs = getSharedPreferences("pos", Context.MODE_PRIVATE);
+                      int x = intent.getIntExtra("x", prefs.getInt("x", 12));
+                      int y = intent.getIntExtra("y", prefs.getInt("y", 80));
+                      prefs.edit().putInt("x", x).putInt("y", y).apply();
+                      layoutParams.x = dp(x);
+                      layoutParams.y = dp(y);
+                      windowManager.updateViewLayout(textView, layoutParams);
+                  }
+                  String panel = intent.getStringExtra("panel");
+                  if (panel != null) {
+                      showValue(panel.trim());
+                  }
+              }
+
+              // Only touch the view when the value really changed (every redraw wakes the LTPO panel)
+              private void showValue(String value) {
+                  if (value.equals(shownText)) {
+                      return;
+                  }
+                  shownText = value;
+                  textView.setText(value);
+                  int color = Color.WHITE;
+                  try {
+                      int hz = Integer.parseInt(value);
+                      if (hz <= 30) {
+                          color = 0xFFE8591A;
+                      } else if (hz <= 60) {
+                          color = 0xFFFFC107;
+                      } else {
+                          color = 0xFF3CD43C;
+                      }
+                  } catch (NumberFormatException ignored) {
+                  }
+                  textView.setTextColor(color);
+              }
+          }
+          HZEOF
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: HzOverlay-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
