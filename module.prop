@@ -1,0 +1,6 @@
+id=xiaomi17_gsi_ltpo_fix
+name=Xiaomi 17 GSI LTPO & VRR Safe Fix
+version=v2.8
+versionCode=280
+author=@Lifeispoop
+description=Live DeviceConfig-based refresh rate tuning for GSI ROMs (30/60 fps video -> 60Hz, 1-10Hz LTPO idle) + toggleable Hz indicator (SF overlay + real panel Hz page).

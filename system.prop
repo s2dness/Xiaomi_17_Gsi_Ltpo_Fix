@@ -1,0 +1,14 @@
+# AOSP SurfaceFlinger VRR & content-based refresh rate
+ro.surface_flinger.use_content_detection_for_refresh_rate=true
+ro.surface_flinger.enable_frame_rate_override=true
+ro.surface_flinger.set_display_power_timer_ms=800
+# Layer caching can cause gray flashes on translucent layers (status bar, video controls)
+ro.surface_flinger.enable_layer_caching=false
+
+# Top-left dual Hz indicator (display Hz + render fps: 120 120 / 60 30)
+debug.sf.show_refresh_rate_overlay_in_middle=0
+debug.sf.show_refresh_rate_overlay_render_rate=1
+
+# Qualcomm / Xiaomi panel DFPS (idle/touch timers are set by post-fs-data.sh from the profile)
+persist.vendor.dfps.level=3
+vendor.display.enable_dpps_dynamic_fps=1
